@@ -10,6 +10,7 @@ const 富文本 := preload("res://脚本/界面/富文本.gd")
 const 确认弹 := preload("res://脚本/界面/窗口/输入确认弹.gd")
 const 地图信息页面场景 := preload("res://场景/界面/窗口/地图信息/地图信息窗口.tscn")
 const 地图NPC条目场景 := preload("res://场景/界面/组件/地图NPC条目.tscn")
+const 地图资源 := preload("res://脚本/地图/地图资源.gd")
 const 排行榜页面场景 := preload("res://场景/界面/窗口/排行榜/排行榜窗口.tscn")
 const 排行榜条目场景 := preload("res://场景/界面/组件/排行榜条目.tscn")
 const 礼包兑换页面场景 := preload("res://场景/界面/窗口/兑换/礼包兑换窗口.tscn")
@@ -470,6 +471,10 @@ func _render_copy() -> void:
 
 
 
+## 地图页选中的寻路目标（`{"kind": "npc"|"region", "row": 条目}`）。
+## 存在**实例**上而不是页面里：翻页签/刷新会整页重建，选中态不该跟着丢。
+var _地图选中: Dictionary = {}
+
 func _render_map_info() -> void:
 	var page := _instantiate_page(地图信息页面场景)
 	_configure_original_panel(page.get_node("内容框") as Panel, true)
@@ -480,9 +485,14 @@ func _render_map_info() -> void:
 		窗口.选页签(tab, index == _map_view_tab)
 		_apply_tab_skin(tab)
 		tab.pressed.connect(_set_map_view_tab.bind(index))
+	var 世界页: bool = _map_view_tab == 1
 	var map_title := page.get_node("地图标题") as Label
-	map_title.text = _session.get_map_name() if _map_view_tab == 0 else "忍界世界地图"
+	map_title.text = "忍界世界地图" if 世界页 else _session.get_map_name()
 	_configure_label(map_title, 12, Color.WHITE)
+	# ⚠ 两个页签的**底图**必须换：场景里烘死了世界地图那一张，而切换只改了标题，
+	#   于是"当前地图 / 世界地图"看起来一模一样（用户 2026-11-24 报）。
+	var 底图 := page.get_node("地图底图") as TextureRect
+	底图.texture = _世界地图底图() if 世界页 else _当前地图底图()
 	var map_id := page.get_node("寻路列表/地图编号") as Label
 	map_id.text = "地图编号  %s" % _session.current_map_id
 	var channel := page.get_node("寻路列表/当前线路") as Label
@@ -493,11 +503,40 @@ func _render_map_info() -> void:
 	_configure_label(page.get_node("当前位置") as Label, 16, Color("#ff4b3e"))
 	_configure_value_input(page.get_node("X坐标") as LineEdit)
 	_configure_value_input(page.get_node("Y坐标") as LineEdit)
-	for button_path in ["前往", "寻找NPC"]:
-		var button := page.get_node(button_path) as Button
-		_configure_standard_button(button)
-		button.pressed.connect(func(): 窗口._show_hint("请在地图或右侧列表中选择寻路目标"))
+	(page.get_node("前往") as Button).pressed.connect(_map_go.bind(page))
+	(page.get_node("寻找NPC") as Button).pressed.connect(_map_find_npc)
+	_configure_standard_button(page.get_node("前往") as Button)
+	_configure_standard_button(page.get_node("寻找NPC") as Button)
+	var 信息 := page.get_node("寻路列表/地图信息") as Label
+	var npc_标题 := page.get_node("寻路列表/NPC标题") as Label
 	var npc_list := page.get_node("寻路列表/NPC列表") as VBoxContainer
+	if 世界页:
+		npc_标题.text = "可前往区域"
+		信息.text = "忍界世界地图"
+		_填世界地图区域(npc_list, page)
+	else:
+		npc_标题.text = "可寻路目标"
+		信息.text = "当前地图  %s" % _session.get_map_name()
+		_填当前图NPC(npc_list, page)
+
+func _set_map_view_tab(index: int) -> void:
+	if 窗口 == null or 窗口._overlay == null or 窗口._overlay.visible == false:
+		return
+	_map_view_tab = index
+	_refresh_current()
+
+## 场景里烘的那张世界地图底图（两个页签的兜底）。
+func _世界地图底图() -> Texture2D:
+	var 路 := "res://素材/地图/世界地图/世界地图背景.png"
+	return load(路) if ResourceLoader.exists(路) else null
+
+## 当前地图的小地图（`素材/地图/<目录>/小地图.png`，与 HUD 小地图同一份）。
+func _当前地图底图() -> Texture2D:
+	var 路 := "res://素材/地图/%s/小地图.png" % 地图资源.folder_name(str(_session.current_map_id))
+	return load(路) if ResourceLoader.exists(路) else _世界地图底图()
+
+## 当前地图页的 NPC 列表。条目记着模板号，点一下 = 选中 + 填 X/Y（**不是死按钮**）。
+func _填当前图NPC(列表: VBoxContainer, page: Control) -> void:
 	for npc in _session.get_map_npcs():
 		var npc_button := 地图NPC条目场景.instantiate() as Button
 		var title := String(npc.get("title", ""))
@@ -505,15 +544,115 @@ func _render_map_info() -> void:
 		if not title.is_empty():
 			npc_button.text += "  [%s]" % title
 		npc_button.tooltip_text = "(%d, %d)" % [int(npc.get("x", 0)), int(npc.get("y", 0))]
-		npc_button.pressed.connect(_select_map_target.bind(npc_button.text))
-		npc_list.add_child(npc_button)
+		npc_button.pressed.connect(_选择地图目标.bind(npc_button, npc, page, "npc"))
+		列表.add_child(npc_button)
 
-func _set_map_view_tab(index: int) -> void:
-	_map_view_tab = index
-	_refresh_current()
+## 世界地图页的区域列表，数据 = `数据/原版杂项.json` 的 `WorldMap.front`
+## （原版世界地图上那些可点的地名，字段就写着怪物/修炼/首领/产出四行）。
+func _填世界地图区域(列表: VBoxContainer, page: Control) -> void:
+	var 表: Variant = 游戏数据.取表("原版杂项").get("WorldMap", {})
+	if not 表 is Dictionary:
+		return
+	var 前: Variant = (表 as Dictionary).get("front", {})
+	if not 前 is Dictionary:
+		return
+	var 键: Array = (前 as Dictionary).keys()
+	键.sort_custom(func(a, b): return int(String(a)) < int(String(b)))
+	for k in 键:
+		var 条: Variant = (前 as Dictionary)[k]
+		if not 条 is Dictionary:
+			continue
+		var 区域 := 条 as Dictionary
+		var 钮 := 地图NPC条目场景.instantiate() as Button
+		钮.text = String(区域.get("mapName", "区域 %s" % str(k)))
+		钮.tooltip_text = "怪物 %s｜修炼 %s" % [str(区域.get("mobLevel", "-")), str(区域.get("farmLevel", "-"))]
+		钮.pressed.connect(_选择地图目标.bind(钮, 区域, page, "region"))
+		列表.add_child(钮)
 
-func _select_map_target(target_name: String) -> void:
-	窗口._show_hint("已选择寻路目标：%s" % target_name)
+## 点列表条目：**选中 + 把该目标写进右侧信息区**。原来这里只弹一句提示，
+## 所以用户看到的正是"点击 NPC 无效"。
+func _选择地图目标(钮: Button, 条: Dictionary, page: Control, 类: String) -> void:
+	_地图选中 = {"kind": 类, "row": 条.duplicate(true)}
+	var 信息 := page.get_node("寻路列表/地图信息") as Label
+	if 类 == "npc":
+		var x := int(条.get("x", 0))
+		var y := int(条.get("y", 0))
+		(page.get_node("X坐标") as LineEdit).text = str(x)
+		(page.get_node("Y坐标") as LineEdit).text = str(y)
+		var title := String(条.get("title", ""))
+		信息.text = "%s%s  (%d, %d)" % [String(条.get("name", "")), "  [%s]" % title if not title.is_empty() else "", x, y]
+		窗口._show_hint("已选择 %s，点「寻找NPC」走过去" % String(条.get("name", "")))
+	else:
+		信息.text = "%s  怪物 %s｜修炼 %s｜首领 %s %s｜产出 %s" % [
+			String(条.get("mapName", "")), str(条.get("mobLevel", "-")),
+			str(条.get("farmLevel", "-")), str(条.get("bossName", "-")),
+			str(条.get("bossTime", "-")), str(条.get("output", "-"))]
+		窗口._show_hint("已选择 %s，点「前往」传送" % String(条.get("mapName", "")))
+	钮.button_pressed = true
+
+## 「前往」：当前地图页 = 走到 X/Y 那一格；世界地图页 = 传送到选中的区域。
+func _map_go(page: Control) -> void:
+	if _map_view_tab == 1:
+		_世界地图前往()
+		return
+	var 玩家 := _玩家节点()
+	if 玩家 == null:
+		窗口._show_hint("还没进入地图，没法寻路")
+		return
+	var 点 := Vector2(
+		float((page.get_node("X坐标") as LineEdit).text.to_int()),
+		float((page.get_node("Y坐标") as LineEdit).text.to_int()))
+	if 点 == Vector2.ZERO:
+		窗口._show_hint("请先在右侧列表选择目标，或直接填 X/Y")
+		return
+	if not bool(玩家.call("走向", 点, true, true)):
+		窗口._show_hint("那个位置走不过去")
+
+## 「寻找NPC」：当前地图页 = 找到选中的 NPC 走过去（同图寻路、跨图先走传送点）；
+## 世界地图页 = 退回当前地图页（那页才有 NPC 可找）。
+func _map_find_npc() -> void:
+	if _map_view_tab == 1:
+		_set_map_view_tab(0)
+		窗口._show_hint("回到当前地图，点右侧列表里的目标再寻路")
+		return
+	if String(_地图选中.get("kind", "")) != "npc":
+		窗口._show_hint("请先在右侧列表选中一个 NPC")
+		return
+	var 号 := int(str((_地图选中.get("row", {}) as Dictionary).get("id", "0")))
+	var 小地图 := _小地图面板()
+	if 小地图 == null or not 小地图.has_method("前往NPC"):
+		窗口._show_hint("地图面板不在，没法寻路")
+		return
+	小地图.call("前往NPC", 号, true)
+
+func _世界地图前往() -> void:
+	if String(_地图选中.get("kind", "")) != "region":
+		窗口._show_hint("请先在右侧列表选择要去的区域")
+		return
+	var 条: Dictionary = (_地图选中.get("row", {}) as Dictionary)
+	var 图号 := int(str(条.get("mapid", "0")))
+	var 名 := String(条.get("mapName", ""))
+	if 图号 <= 0:
+		窗口._show_hint("这个区域没有可用地图")
+		return
+	if 图号 == int(_session.current_map_id):
+		窗口._show_hint("你已经在这张地图里了")
+		return
+	var 后端 = 窗口._backend
+	if 后端 != null and 后端.in_game and 后端.request_move_to_npc_map(0, 图号, 0, false, true):
+		窗口._show_hint("前往 %s" % 名)
+		return
+	窗口._show_hint("当前无法传送到 %s" % 名)
+
+func _玩家节点() -> Node:
+	var 树: SceneTree = 窗口.get_tree()
+	return 树.get_first_node_in_group("player") if 树 != null else null
+
+func _小地图面板() -> Node:
+	var 树: SceneTree = 窗口.get_tree()
+	if 树 == null or 树.current_scene == null:
+		return null
+	return 树.current_scene.get_node_or_null("小地图面板")
 
 ## ── 排行榜页（原版 `RankWindow2` 整扇）─────────────────────────────────
 ## 这一页**没有一处文案是自己写的**：23 条榜单、列头、规则、"同级榜"页签显不显，

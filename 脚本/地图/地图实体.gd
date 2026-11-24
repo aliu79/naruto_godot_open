@@ -2751,7 +2751,14 @@ func _spawn_life_entry(entry: Dictionary, index: int, from_server: bool) -> Comb
 	actor.add_child(sprite)
 	var 对手: Dictionary = entry.get("对手", {}) as Dictionary
 	var sprite_kind := "npc" if kind == "n" else "mob"
-	if 对手.is_empty():
+	var 怪物外观: Dictionary = GAME_DATA.monster(entity_id) if kind == "m" else {}
+	var 外观类别 := String(怪物外观.get("appearance_kind", ""))
+	var 外观号 := String(怪物外观.get("appearance_id", ""))
+	if kind == "m" and 外观类别 == "character" and not 外观号.is_empty():
+		# 怪物可声明复用一套人物帧；人物动作别名会映射到怪物 AI 动作。
+		if not sprite.configure("character", 外观号, "stand"):
+			sprite.configure(sprite_kind, entity_id, "stand")
+	elif 对手.is_empty():
 		sprite.configure(sprite_kind, entity_id, "stand")
 	elif not sprite.configure("character", 角色造型.造型号(int(对手.get("face", 0)), 0), "stand"):
 		## 头像号解不出身体（老档 face=0、或那张没导）⇒ **退回怪物**，别画成一团空气。

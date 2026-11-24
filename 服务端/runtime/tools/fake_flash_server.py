@@ -5844,6 +5844,28 @@ class GameDataCatalog:
         self.npc_strings = self._load_npc_strings(root)
         self.npc_functions = self._load_npc_functions(root)
         self.raw_mobs = root.get("Mob") if isinstance(root.get("Mob"), dict) else {}
+        # 新怪物以普通 JSON 扩展原始 Mob 包，避免改写不可维护的 GameData.dat。
+        custom_mobs_path = Path(
+            os.environ.get(
+                "NARUTO_CUSTOM_MONSTERS_PATH",
+                str(PROJECT_ROOT.parent.parent / "数据" / "自定义怪物.json"),
+            )
+        )
+        try:
+            custom_mobs = json.loads(custom_mobs_path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            custom_mobs = {}
+        if isinstance(custom_mobs, dict):
+            for raw_template_id, raw_mob in custom_mobs.items():
+                if not isinstance(raw_mob, dict):
+                    continue
+                try:
+                    template_id = int(raw_template_id)
+                except (TypeError, ValueError):
+                    continue
+                self.raw_mobs[str(template_id)] = raw_mob
+                if raw_mob.get("name"):
+                    self.mob_names[template_id] = str(raw_mob["name"])
         self.raw_characters = (
             root.get("M_Char") if isinstance(root.get("M_Char"), dict) else {}
         )
@@ -7094,6 +7116,24 @@ class GameDataCatalog:
         """Build the right-top Boss panel rows from the original BossWang config."""
         raw_config = self._decode_section(self.raw_etc.get("BossWang"))
         raw_bosses = raw_config.get("boss") if isinstance(raw_config, dict) else {}
+        if not isinstance(raw_bosses, dict):
+            raw_bosses = {}
+        custom_bosses_path = Path(
+            os.environ.get(
+                "NARUTO_CUSTOM_BOSSES_PATH",
+                str(PROJECT_ROOT.parent.parent / "数据" / "自定义首领.json"),
+            )
+        )
+        try:
+            custom_bosses = json.loads(
+                custom_bosses_path.read_text(encoding="utf-8-sig")
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            custom_bosses = {}
+        if isinstance(custom_bosses, dict):
+            for boss_index, boss_row in custom_bosses.items():
+                if isinstance(boss_row, dict):
+                    raw_bosses[str(boss_index)] = boss_row
         default_spawn = raw_config.get("spawn") if isinstance(raw_config, dict) else {}
         default_times = tuple(
             clock
@@ -11667,6 +11707,20 @@ class FakeFlashSession:
     WORLD_BOSS_ACTIVE_SECONDS = 60 * 60
     WORLD_BOSS_SCHEDULE_TIMES = ((13, 0), (22, 0))
     WORLD_BOSS_BGM_CHOICES = ("19", "20")
+    KAGUYA_TEMPLATE_ID = 5_400_100
+    KAGUYA_ASH_BONE_ID = 900_001
+    KAGUYA_EIGHTY_GODS_ID = 900_002
+    KAGUYA_AMENOMINAKA_ID = 900_003
+    KAGUYA_YOMOTSU_ID = 900_004
+    KAGUYA_TRUTH_SEEKING_ID = 900_005
+    KAGUYA_ENRAGE_HP_PERCENT = 35
+    KAGUYA_SKILL_PROFILES = {
+        900_001: {"damage": 1.85, "pierce": 65.0},
+        900_002: {"damage": 1.30, "pierce": 15.0, "critical": 30.0},
+        900_003: {"damage": 1.15},
+        900_004: {"damage": 1.00, "pierce": 20.0, "life_steal": 40.0},
+        900_005: {"damage": 2.40, "pierce": 100.0, "critical": 10.0},
+    }
     WAVE_MEMORIAL_BOSS_SPECS = (
         (103_030_000, 2_100_002),  # Border Realm: Zabuza
         (104_040_000, 2_100_003),  # Wave Country Secret Forest: Haku
@@ -37983,6 +38037,16 @@ class FakeFlashSession:
     def _choose_monster_attack(self, monster: MonsterState) -> MonsterAttackDefinition:
         """Choose one authored attack using its GameData skillRate weight."""
         attacks = GAME_DATA_CATALOG.get_monster_definition(monster.template_id).attacks
+        if (
+            monster.template_id == self.KAGUYA_TEMPLATE_ID
+            and monster.hp * 100 > monster.max_hp * self.KAGUYA_ENRAGE_HP_PERCENT
+        ):
+            # 膨胀求道玉是第二阶段技能，35% 血量以上绝不进入随机池。
+            attacks = tuple(
+                attack
+                for attack in attacks
+                if attack.skill_id != self.KAGUYA_TRUTH_SEEKING_ID
+            )
         total = sum(max(1, attack.probability) for attack in attacks)
         roll = self.random.randrange(total)
         for attack in attacks:
@@ -38021,7 +38085,19 @@ class FakeFlashSession:
         monster_attack = round(
             monster_attack * max(0.0, 100.0 - attack_reduction) / 100.0
         )
-        ignored_defence = self._monster_status_value(monster, "copy_ignore_def")
+        kaguya_profile = (
+            self.KAGUYA_SKILL_PROFILES.get(attack_skill_id, {})
+            if monster.template_id == self.KAGUYA_TEMPLATE_ID
+            else {}
+        )
+        if kaguya_profile:
+            monster_attack = round(
+                monster_attack * float(kaguya_profile.get("damage", 1.0))
+            )
+        ignored_defence = max(
+            self._monster_status_value(monster, "copy_ignore_def"),
+            float(kaguya_profile.get("pierce", 0.0)),
+        )
         effective_defence = round(
             self._current_defence() * max(0.0, 100.0 - ignored_defence) / 100.0
         )
@@ -38051,6 +38127,7 @@ class FakeFlashSession:
                 )
                 / 100.0
             )
+            monster_critical += float(kaguya_profile.get("critical", 0.0)) * 100.0
             critical = self._roll_combat_rate(monster_critical)
             if critical:
                 reduced_damage *= self.CRITICAL_DAMAGE_MULTIPLIER
@@ -38123,6 +38200,44 @@ class FakeFlashSession:
             self._schedule_combat_save()
         attack_skill = GAME_DATA_CATALOG.get_skill_definition(attack_skill_id)
         status_triggered = False
+        if damage > 0 and monster.hp > 0 and kaguya_profile:
+            life_steal = float(kaguya_profile.get("life_steal", 0.0))
+            if life_steal > 0.0:
+                recovered = max(1, round(damage * life_steal / 100.0))
+                monster.hp = min(monster.max_hp, monster.hp + recovered)
+                status_triggered = True
+                self._send_visible(
+                    f"{op(ServerOpcode.SHOW_MONSTER_HP)}:{monster.object_id}:"
+                    f"{self._monster_hp_percent(monster)}"
+                )
+            if attack_skill_id == self.KAGUYA_AMENOMINAKA_ID:
+                for buff_type, effect_type, value, duration_ms in (
+                    (CombatBuffType.SLOW, "slow", 45.0, 5_000),
+                    (CombatBuffType.LOSE_EQ_DEF, "lose_eq_def", 30.0, 6_000),
+                ):
+                    self._apply_timed_skill_buff(
+                        buff_type=buff_type,
+                        skill_id=attack_skill_id,
+                        skill_level=attack_skill_level,
+                        value_percent=value,
+                        duration_ms=duration_ms,
+                        effect_type=effect_type,
+                        source_character_id=0,
+                        source_monster_id=monster.object_id,
+                    )
+                status_triggered = True
+            elif attack_skill_id == self.KAGUYA_TRUTH_SEEKING_ID:
+                self._apply_timed_skill_buff(
+                    buff_type=CombatBuffType.STUN,
+                    skill_id=attack_skill_id,
+                    skill_level=attack_skill_level,
+                    value_percent=100.0,
+                    duration_ms=2_500,
+                    effect_type="stun",
+                    source_character_id=0,
+                    source_monster_id=monster.object_id,
+                )
+                status_triggered = True
         if damage > 0 and monster.hp > 0 and attack_skill is not None:
             if attack_skill.effect_type in COMBAT_DEBUFF_TYPE_BY_EFFECT:
                 status_triggered = self._apply_player_skill_status(

@@ -201,6 +201,10 @@ var server_npc_shop_loaded := false
 ## **这个角色根本没学过**的 id 出去，服务端回"这个技能还没有学习"，怪一点事没有
 ## （用户 2026-09-27 实机报的"按攻击技能不能对附近的怪物释放"就是这个）。
 var server_skills_loaded := false
+## 服务端技能表正在**整包**灌入（`_apply_skill_list_text` 那一轮）。
+## 包里每条都会走一次 `应用技能`；若每条都重建一次快捷栏，第一条到达时后面还没到的技能
+## 会被判成"没学过"直接清掉 —— 玩家的排布就没了。所以批量期间只收数据，结束时统一重建。
+var 技能批量中 := false
 var cultivation_states := {}
 ## 系统消息：左侧那列活动倒计时，每项 {text, seconds, 基准毫秒}
 var 活动倒计时: Array = []
@@ -2845,6 +2849,30 @@ func 刷新增益显示() -> void:
 func apply_backend_skill(skill_id: int, level: int, master_level: int) -> void:
 	服务端同步.应用技能(self, skill_id, level, master_level)
 
+## 服务端技能表开始/结束整包灌入（`后端连接._apply_skill_list_text` 调）。
+## 批量期间 `应用技能` 只收数据、不重建快捷栏也不发信号，收完再统一来一次 ——
+## 否则第一条技能到达就把"还没收到"的技能当成没学过，玩家的快捷栏排布被清空。
+func 开始技能批量() -> void:
+	技能批量中 = true
+
+func 结束技能批量() -> void:
+	技能批量中 = false
+	_rebuild_skill_slots()
+	skills_changed.emit(learned_skills.duplicate(true))
+
+## 服务端明确回"这个角色**一个忍术都没有**"（WARP 帧 `skillInfoList = "-"`）。
+## 这同样是权威结论，不是"这段没发"：必须把 `离线示例数据` 编的那几条假技能清掉，
+## 否则技能槽照旧排着它们，一按服务端就回「这个技能还没有学习」
+## （2026-11-24 用户报的 4 级新号；见 `server_skills_loaded` 声明处那段注释）。
+func apply_backend_no_skills() -> void:
+	backend_authoritative = true
+	if server_skills_loaded and learned_skills.is_empty():
+		return
+	server_skills_loaded = true
+	learned_skills.clear()
+	_rebuild_skill_slots()
+	skills_changed.emit(learned_skills.duplicate(true))
+
 func apply_backend_inventory(items: Array, equipment: Dictionary) -> void:
 	服务端同步.应用背包(self, items, equipment)
 
@@ -3969,10 +3997,20 @@ func _rebuild_skill_slots() -> void:
 	for _slot in 10:
 		rebuilt.append({})
 	var assigned := 0
+	# 服务端技能表是否已经**整包**到齐。没到齐时，`learned_skills` 里只是这一帧先到的几条，
+	# 拿它当"没学过"的判据会把玩家排好的快捷栏清掉（用户 2026-11-24 报"重启后快捷栏没了"）。
+	var 表已齐 := server_skills_loaded and not 技能批量中
 	for slot in range(mini(skill_slots.size(), 10)):
 		var old_slot: Dictionary = skill_slots[slot]
-		var index := _skill_index(String(old_slot.get("id", "")))
+		var 编号 := String(old_slot.get("id", ""))
+		if 编号.is_empty():
+			continue
+		var index := _skill_index(编号)
 		if index < 0:
+			if not 表已齐:
+				# 原样留着：格子里本来就存着 id/名字/图标，够画了；等表到齐再按真值刷新。
+				rebuilt[slot] = old_slot
+				assigned += 1
 			continue
 		var skill: Dictionary = learned_skills[index]
 		if not GAME_DATA.skill_is_active(skill.get("id", "")):
@@ -4085,9 +4123,12 @@ func _apply_level_ups() -> void:
 
 func _save_local_state() -> void:
 	if backend_authoritative:
+		# ⚠️ 在线时 `玩家数据.json` 整份不写（服务端才是权威），但**快捷栏排布是纯客户端状态**，
+		# 没有对应协议 ⇒ 必须跟着设置一起落盘，否则退出重进就丢（用户 2026-11-24 报）。
 		var settings_file := FileAccess.open("user://玩家设置.json", FileAccess.WRITE)
 		if settings_file != null:
-			settings_file.store_string(JSON.stringify({"game_settings": game_settings}, "\t", false))
+			settings_file.store_string(JSON.stringify(
+				{"game_settings": game_settings, "skill_slots": skill_slots}, "\t", false))
 		return
 	var state := {
 		"player_stats": player_stats,
@@ -4135,19 +4176,26 @@ static func _像离线背包(表: Variant) -> bool:
 
 func _load_local_state() -> void:
 	var settings_override := {}
+	var 存的快捷栏: Array = []
 	var settings_file := FileAccess.open("user://玩家设置.json", FileAccess.READ)
 	if settings_file != null:
 		var settings_parsed = JSON.parse_string(settings_file.get_as_text())
 		if settings_parsed is Dictionary:
 			settings_override = settings_parsed.get("game_settings", {})
+			# 在线时快捷栏只写在这份设置文件里（见 `_save_local_state`）。
+			存的快捷栏 = settings_parsed.get("skill_slots", [])
 	var file := FileAccess.open("user://玩家数据.json", FileAccess.READ)
 	if file == null:
 		game_settings.merge(settings_override, true)
+		if not 存的快捷栏.is_empty():
+			skill_slots.assign(存的快捷栏)
 		_migrate_backend_settings()
 		return
 	var parsed = JSON.parse_string(file.get_as_text())
 	if typeof(parsed) != TYPE_DICTIONARY:
 		game_settings.merge(settings_override, true)
+		if not 存的快捷栏.is_empty():
+			skill_slots.assign(存的快捷栏)
 		_migrate_backend_settings()
 		return
 	# ⚠️ 2026-10-11 §3.104（欠账⑦）**只回填当前模型里有的键** —— 原来是**无脑
@@ -4183,6 +4231,10 @@ func _load_local_state() -> void:
 		equipped_items[int(键)] = (值 as Dictionary).duplicate(true)
 	learned_skills.assign(parsed.get("learned_skills", learned_skills))
 	skill_slots.assign(parsed.get("skill_slots", []))
+	# 在线那份（设置文件）比离线档新：在线时 `玩家数据.json` 根本不落盘，
+	# 快捷栏只写在设置文件里，这里覆盖回离线档的位置。
+	if not 存的快捷栏.is_empty():
+		skill_slots.assign(存的快捷栏)
 	accepted_quests.assign(parsed.get("accepted_quests", accepted_quests))
 	available_quests.assign(parsed.get("available_quests", available_quests))
 	completed_quest_ids.assign(parsed.get("completed_quest_ids", completed_quest_ids))

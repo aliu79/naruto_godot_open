@@ -99,8 +99,11 @@ static func 应用技能(会话, 技能编号: int, 等级: int, 熟练度: int)
 			# 图标本来就跟着定义走（`skill_icon_path(record)` 读 `icon_class`），不要覆盖。
 		}, true)
 		会话.learned_skills.append(定义)
-	会话._rebuild_skill_slots()
-	会话.skills_changed.emit(会话.learned_skills.duplicate(true))
+	# 整包灌入期间只收数据：每条都重建的话，第一条到达时后面还没到的技能会被判成
+	# "没学过"并把快捷栏格子清掉（`结束技能批量` 会统一重建一次）。
+	if not bool(会话.技能批量中):
+		会话._rebuild_skill_slots()
+		会话.skills_changed.emit(会话.learned_skills.duplicate(true))
 
 static func 应用背包(会话, 物品: Array, 装备: Dictionary) -> void:
 	会话.backend_authoritative = true

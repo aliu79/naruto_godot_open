@@ -179,7 +179,7 @@ func _量钮禁用三件套(根: Control) -> void:
 				"「%s」常态皮仍是共享原件（派生件不倒回 通用控件/）" % 名,
 				"实际 %s" % (钮.texture_normal.resource_path if 钮 != null and 钮.texture_normal != null else "<无>"))
 	var 码 := 根.get_node_or_null("分页/页码") as Label
-	_判(码 != null and 码.text == "1/4", "页码烘成 1/4（11 条 ÷ 每页 3 = ceil = 4）",
+	_判(码 != null and 码.text == "1/4", "页码烘成 1/4（12 条 ÷ 每页 3 = ceil = 4）",
 			"实际 %s" % (码.text if 码 else "<无>"))
 
 
@@ -253,7 +253,31 @@ func _星段(序: int) -> Array:
 func _量数据不变量(表: Dictionary, 首页索引: Array) -> void:
 	var 包 := _读表("res://数据/原版杂项.json")
 	var 行: Dictionary = ((包.get("BossWang", {}) as Dictionary).get("boss", {}) as Dictionary) as Dictionary
-	_判(行.size() == 11, "BossWang.boss = 11 条（⇒ 4 页，末页只有 2 条）", "实际 %d 条" % 行.size())
+	_判(行.size() == 12, "BossWang.boss = 12 条（⇒ 4 页，末页 3 条）", "实际 %d 条" % 行.size())
+	var 辉夜: Dictionary = 行.get("11", {}) as Dictionary
+	_判(int(辉夜.get("mobid", 0)) == 5400100 and int(辉夜.get("mapid", 0)) == 100010000,
+			"首领 11 = 大筒木辉夜（怪物 5400100 / 木叶村 100010000）", "实际 %s" % str(辉夜))
+	_判(int((辉夜.get("realSpawnTimes", {}) as Dictionary).size()) == 2
+			and int(辉夜.get("onlyOneChannel", 0)) == 1,
+			"辉夜每天 13:00 / 22:00 刷新，仅一线", "实际 %s" % str(辉夜.get("realSpawnTimes", {})))
+	var 怪物 := _读表("res://数据/怪物.json")
+	var 模板: Dictionary = 怪物.get("5400100", {}) as Dictionary
+	_判(String(模板.get("name", "")) == "【世界BOSS】大筒木辉夜"
+			and int(模板.get("level", 0)) == 200 and int(模板.get("boss", 0)) == 1,
+			"辉夜怪物模板名称、200 级与 Boss 标记完整", "实际 %s" % str(模板))
+	_判(String(模板.get("appearance_kind", "")) == "character"
+			and String(模板.get("appearance_id", "")) == "10000095"
+			and String(模板.get("link", "")).is_empty(),
+			"辉夜使用独立人物模型 10000095，不回退宇智波斑 link", "实际 %s" % str(模板))
+	var 技能组: Dictionary = 模板.get("skills", {}) as Dictionary
+	var 技能号: Array = []
+	for 技能 in 技能组.values():
+		技能号.append(int((技能 as Dictionary).get("skill", 0)))
+	技能号.sort()
+	_判(技能号 == [900001, 900002, 900003, 900004, 900005],
+			"辉夜拥有五个独立大筒木技能，不继承斑技能组", "实际 %s" % str(技能号))
+	_判(ResourceLoader.exists("res://素材/界面/原版窗口/首领/Effect_Wang_11.png"),
+			"辉夜首领头像 Effect_Wang_11.png 已就位")
 	_判(int(表.get("每页条数", 0)) == 3, "每页 3 条 = `Window:61` new PageComponent(条数, 3)",
 			"实际 %s" % str(表.get("每页条数")))
 	_判(首页索引.size() == 3 and int(首页索引[0]) == 0 and int(首页索引[2]) == 2,
@@ -295,3 +319,6 @@ func _量控制器接线() -> void:
 			"薄壳组件 首领卡片.tscn 已不被场景/控制器引用（文件保留未删）", "仍有引用")
 	_判(场.count('node name=') == 80, "场景 80 个节点（三卡 × 22 + 外壳 + 翻页条）",
 			"实际 %d ⇒ 八成被旧薄壳顶回去了" % 场.count('node name='))
+	var 实体 := FileAccess.get_file_as_string("res://脚本/地图/地图实体.gd")
+	_判(实体.contains('外观类别 == "character"') and 实体.contains('sprite.configure("character", 外观号, "stand")'),
+			"怪物支持声明独立人物外观，辉夜使用 10000095", "地图实体.gd 缺少通用人物外观接线")

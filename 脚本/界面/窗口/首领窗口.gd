@@ -491,6 +491,15 @@ static func _首领前往(行: Dictionary) -> void:
 		return
 	if bool(_宿主._session.hang_state.get("active", false)):
 		_宿主._session.request_hang(false)
+	# ⚠ 在线时换图**必须由服务端授权**：`GameSession.request_map_change` 只换客户端场景，
+	#   服务端仍认为玩家在旧图，于是实体/首领/掉落全按旧图发 —— 点「前往」到了目标图也空空如也
+	#   （2026-11-24 用户报「设置世界boss 水木，进图后没有 boss」：服务端日志里从没出现过目标图）。
+	#   走既有的 `MOVETO_NPCMAP(4027)`（活跃度页「小鸟」同一条），npc 填 0 = 只换图不找人。
+	var 后端: Node = _宿主.get_node_or_null("/root/BackendConnection")
+	if 后端 != null and 后端.in_game and 后端.request_move_to_npc_map(0, int(图), 0, false, true):
+		_宿主._show_hint("前往 %s" % 首领地图名(行))
+		return
+	# 离线示例（没有在线会话）退回本地换图。
 	_宿主._session.request_map_change(图, "")
 	_宿主._show_hint("前往 %s" % 首领地图名(行))
 

@@ -237,6 +237,15 @@ BALANCE_DEFAULTS: dict[str, dict[str, Any]] = {
             "5400099": [
                 {"itemId": 16000178, "count": 20, "prob10000": 10000, "bind": False, "scope": "primary_world_boss", "source": "project-designed-nine-tail-progression-v1"},
             ],
+            # 大筒木辉夜使用独立奖励表，不继承斑的九尾残魂掉落。
+            "5400100": [
+                {"itemId": 11020014, "count": 1, "prob10000": 10000, "bind": False, "source": "project-designed-kaguya-v1"},
+                {"itemId": 15009004, "count": 5, "prob10000": 10000, "bind": False, "source": "project-designed-kaguya-v1"},
+                {"itemId": 11000352, "count": 1, "prob10000": 5000, "bind": False, "source": "project-designed-kaguya-v1"},
+                {"itemId": 15035007, "count": 1, "prob10000": 2000, "bind": False, "source": "project-designed-kaguya-v1"},
+                {"itemId": 16000184, "count": 1, "prob10000": 300, "bind": False, "source": "project-designed-kaguya-v1"},
+                {"itemId": 1210445, "count": 1, "prob10000": 100, "bind": False, "source": "project-designed-kaguya-v1"},
+            ],
         },
     },
 }

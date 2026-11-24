@@ -4614,12 +4614,24 @@ static func 心法名(号: int) -> String:
 ## 已学忍术只在 WARP_CHAR_INFO 的 legacy 字段序第 41 项下发。
 func _apply_skill_list_text(blob: String) -> void:
 	if blob.is_empty() or blob == "-":
+		# ⚠️ `-` **不是**"这段没发"，而是"这个角色没有已学忍术"（`_encode_skill_list` 的空表形态）。
+		# 以前这里直接 return ⇒ `server_skills_loaded` 永不为真，`离线示例数据` 编的那几条假技能
+		# 一直排在技能槽里；一按就发 1001001，服务端查不到 `state.skills[1001001]`
+		# ⇒ 回「这个技能还没有学习」（2026-11-24 用户报 4 级新号）。
+		var 会话 := get_node_or_null("/root/GameSession")
+		if 会话 != null:
+			会话.apply_backend_no_skills()
 		return
+	var 会话: Node = get_node_or_null("/root/GameSession")
+	if 会话 != null:
+		会话.开始技能批量()
 	for entry in blob.split("@", false):
 		var values := entry.split("&", false)
 		if values.size() < 3:
 			continue
 		_apply_skill(int(values[0]), int(values[1]), int(values[2]))
+	if 会话 != null:
+		会话.结束技能批量()
 
 func _apply_map_state(map_id: int, x: int, y: int, hp: int) -> void:
 	_switch_authoritative_map(map_id)
